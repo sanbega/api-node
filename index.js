@@ -8,6 +8,8 @@ app.use(express.json());
 
 const PORT = 3000;
 
+//  -------------------------  DATABASE  ------------------------- //
+
 const DATABASE = {
   products: [
     {
@@ -27,16 +29,42 @@ const DATABASE = {
   tokens: {
     [(0.2899243543452106).toString()]: "johins@gmail.com",
   },
+  methods: [
+    {
+      id: 1,
+      name: "Pago en efectivo",
+      description: "Debes pagar cuando se te entregue la orden",
+    },
+  ],
   orders: [
     {
       id: 1,
       value: 1000,
       createdAt: new Date(),
       status: "CREADA",
-      user: "johins@gmail.com",
+      user: {
+        email: "johins@gmail.com",
+        password: "1234567",
+        name: "Johan",
+        admin: true,
+      },
+      paymentMethod: {
+        id: 1,
+        name: "Pago en efectivo",
+        description: "Debes pagar cuando se te entregue la orden",
+      },
+      products: [
+        {
+          id: 1,
+          name: "Arroz",
+          price: 1000,
+        },
+      ],
     },
   ],
 };
+
+//  -------------------------  MIDDLEWARE  ------------------------- //
 
 function validateUser(req, res, next) {
   const authorization = req.headers.authorization;
@@ -86,7 +114,27 @@ function validateUserAdmin(req, res, next) {
   next();
 }
 
-//********** AUTH **********
+function findProductById(req, res, next) {
+  const id = req.params.id;
+
+  const product = DATABASE.products.find(
+    (product) => product.id === Number(id)
+  );
+
+  if (!product) {
+    return res.status(404).json({
+      message: "Producto no encontrado",
+    });
+  }
+
+  req.product = product;
+
+  next();
+}
+
+//  -------------------------  AUTH  ------------------------- //
+
+// Register
 app.post("/sign-up", (req, res) => {
   const { email, password, name } = req.body;
 
@@ -141,6 +189,7 @@ app.post("/sign-up", (req, res) => {
   });
 });
 
+// Login
 app.use("/sign-in", (req, res) => {
   const { email, password } = req.body;
 
@@ -162,7 +211,6 @@ app.use("/sign-in", (req, res) => {
     });
   }
 
-  // Buscamos el usuario por email
   const user = DATABASE.users.find((user) => {
     return user.email === email;
   });
@@ -173,7 +221,6 @@ app.use("/sign-in", (req, res) => {
     });
   }
 
-  // Validamos contrasena
   if (user.password !== password) {
     return res.status(400).json({
       message: "Contrasena incorrecta",
@@ -193,11 +240,15 @@ app.use("/sign-in", (req, res) => {
   });
 });
 
-// ******* Orders *******
-// Traer ordenes por usuario
+//  -------------------------  USER  ------------------------- //
+
+//  ***************  ORDERS  *************** //
+// Orders by user
 app.get("/orders", validateUser, (req, res) => {
   const orders =
-    DATABASE.orders.find((order) => order.email === req.user.email) || [];
+    DATABASE.orders.filter((order) => {
+      return order.user.email === req.user.email;
+    }) || [];
 
   res.json({
     message: "Listado de ordenes por usuario",
@@ -205,7 +256,187 @@ app.get("/orders", validateUser, (req, res) => {
   });
 });
 
-// Traer todas las ordenes
+// Create order
+app.post("/orders", validateUser, (req, res) => {
+  const { cart, paymentMethodId } = req.body;
+
+  if (!cart) {
+    return res.status(400).json({
+      message: "Debes enviar los productos a comprar",
+    });
+  }
+
+  if (!Array.isArray(cart)) {
+    return res.status(400).json({
+      message: "Debes enviar los productos correctamente",
+    });
+  }
+
+  if (!cart.length) {
+    return res.status(400).json({
+      message: "Debes enviar al menos un producto",
+    });
+  }
+
+  if (!paymentMethodId) {
+    return res.status(400).json({
+      message: "Debes escoger un metodo de pago",
+    });
+  }
+
+  const paymentMethod = DATABASE.methods.find(
+    (method) => method.id === Number(paymentMethodId)
+  );
+
+  if (!paymentMethod) {
+    return res.status(404).json({
+      message: "Metodo de pago no encontrado",
+    });
+  }
+
+  const products = DATABASE.products.reduce((allProducts, product) => {
+    const productFound = cart.find(
+      (cartProduct) => Number(cartProduct.id) === product.id
+    );
+
+    if (productFound) {
+      allProducts.push({
+        ...product,
+        quantity: productFound.quantity,
+      });
+    }
+
+    return allProducts;
+  }, []);
+
+  const id = DATABASE.orders[DATABASE.orders.length - 1]?.id || 0;
+
+  const value = products.reduce((total, product) => {
+    return total + (product.price * Math.abs(Number(product.quantity)) || 0);
+  }, 0);
+
+  const order = {
+    id: id + 1,
+    value,
+    createdAt: new Date(),
+    status: "CREADA",
+    user: req.user,
+    products,
+    paymentMethod,
+  };
+
+  DATABASE.orders.push(order);
+
+  res.json({
+    message: "Order creada correctamente",
+    data: order,
+  });
+});
+
+// Edit order
+app.post("/orders/:id", validateUser, (req, res) => {
+  const { cart, paymentMethodId } = req.body;
+
+  const id = req.params.id;
+
+  const order = DATABASE.orders.find((order) => order.id === Number(id));
+
+  if (!order) {
+    return res.status(404).json({
+      message: "Order no encontrada",
+    });
+  }
+
+  if (order.status === "CERRADA") {
+    return res.status(404).json({
+      message: "Ya no puedes editar la orden, esta cerrada",
+    });
+  }
+
+  if (order.user.email !== req.user.email) {
+    return res.status(401).json({
+      message: "No eres el due;o de la orden",
+    });
+  }
+
+  if (!cart) {
+    return res.status(400).json({
+      message: "Debes enviar los productos a comprar",
+    });
+  }
+
+  if (!Array.isArray(cart)) {
+    return res.status(400).json({
+      message: "Debes enviar los productos correctamente",
+    });
+  }
+
+  if (!cart.length) {
+    return res.status(400).json({
+      message: "Debes enviar al menos un producto",
+    });
+  }
+
+  if (!paymentMethodId) {
+    return res.status(400).json({
+      message: "Debes escoger un metodo de pago",
+    });
+  }
+
+  const paymentMethod = DATABASE.methods.find(
+    (method) => method.id === Number(paymentMethodId)
+  );
+
+  if (!paymentMethod) {
+    return res.status(404).json({
+      message: "Metodo de pago no encontrado",
+    });
+  }
+
+  const products = DATABASE.products.reduce((allProducts, product) => {
+    const productFound = cart.find(
+      (cartProduct) => Number(cartProduct.id) === product.id
+    );
+
+    if (productFound) {
+      allProducts.push({
+        ...product,
+        quantity: productFound.quantity,
+      });
+    }
+
+    return allProducts;
+  }, []);
+
+  const value = products.reduce((total, product) => {
+    return total + (product.price * Math.abs(Number(product.quantity)) || 0);
+  }, 0);
+
+  const editedOrder = {
+    ...order,
+    value,
+    products,
+    paymentMethod,
+  };
+
+  DATABASE.orders = DATABASE.orders.map((order) => {
+    if (order.id === Number(id)) {
+      return editedOrder;
+    }
+
+    return order;
+  });
+
+  res.json({
+    message: "Order editada correctamente",
+    data: editedOrder,
+  });
+});
+
+//  -------------------------  ADMIN  ------------------------- //
+
+//  ***************  ORDERS  *************** //
+// Get Order
 app.get("/admin/orders", validateUser, validateUserAdmin, (req, res) => {
   const orders = DATABASE.orders || [];
 
@@ -215,7 +446,7 @@ app.get("/admin/orders", validateUser, validateUserAdmin, (req, res) => {
   });
 });
 
-// Cambiar el estado de una orden
+// Change order status
 app.patch("/admin/orders/:id", validateUser, validateUserAdmin, (req, res) => {
   const id = req.params.id;
 
@@ -249,32 +480,20 @@ app.patch("/admin/orders/:id", validateUser, validateUserAdmin, (req, res) => {
   });
 });
 
-// Creacion de productos
-// traer todos los productos
-app.get("/producs",(req, res) => {
-  const products   = DATABASE.products || []
+//  ***************  PRODUCTS  *************** //
+// Get all products
+app.get("/admin/products", validateUser, validateUserAdmin, (req, res) => {
+  const products = DATABASE.products || [];
 
   res.json({
     message: "Estos son todos los productos ",
     data: products,
   });
-})
-//crear un producto
-app.post("/create/products", (req, res) => {
-  console.log(req.body)
-  const { id, name, price} = req.body;
-  const products = {
-    id,
-    name,
-    price
+});
 
-  }
-
-  if (!id) {
-    return res.status(400).json({
-      message: "Debes asignar un id",
-    });
-  }
+// Create product
+app.post("/admin/products", validateUser, validateUserAdmin, (req, res) => {
+  const { name, price } = req.body;
 
   if (!name) {
     return res.status(400).json({
@@ -288,28 +507,96 @@ app.post("/create/products", (req, res) => {
     });
   }
 
+  if (isNaN(Number(price))) {
+    return res.status(400).json({
+      message: "Precio debe ser un numero",
+    });
+  }
 
-  DATABASE.products.push(products);
+  const id = DATABASE.products[DATABASE.products.length - 1]?.id || 0;
+
+  const product = {
+    name,
+    price,
+    id: id + 1,
+  };
+
+  DATABASE.products.push(product);
 
   res.status(201).json({
     message: "Producto disponible",
-    data: products,
+    data: product,
   });
 });
 
+// Edit product
+app.patch(
+  "/admin/products/:id",
+  validateUser,
+  validateUserAdmin,
+  findProductById,
+  (req, res) => {
+    const { name, price } = req.body;
+
+    const id = req.params.id;
+
+    const product = req.product;
+
+    if (price && isNaN(Number(price))) {
+      return res.status(400).json({
+        message: "Precio debe ser un numero",
+      });
+    }
+
+    const editedProduct = {
+      ...product,
+      name: name || product.name,
+      price: price || product.price,
+    };
+
+    DATABASE.products = DATABASE.products.map((product) => {
+      if (product.id === Number(id)) {
+        return editedProduct;
+      }
+
+      return product;
+    });
+
+    res.status(201).json({
+      message: "Producto editado correctamente",
+      data: editedProduct,
+    });
+  }
+);
+
+// Delete product
+app.delete(
+  "/admin/products/:id",
+  validateUser,
+  validateUserAdmin,
+  findProductById,
+  (req, res) => {
+    const product = req.product;
+
+    const id = req.params.id;
+
+    DATABASE.products = DATABASE.products.filter(
+      (product) => product.id !== Number(id)
+    );
+
+    return res.json({
+      message: "Producto eliminado",
+      data: product,
+    });
+  }
+);
+
+//  *************** PAYMENT METHODS  *************** //
+// Get all payments mehtods
+// Create payment method
+// Delete payment method
+// Edit payment method
 
 app.listen(PORT, () => {
   console.log("API REST Acamica corriendo http://localhost:" + PORT);
 });
-
-// Crear producto
-// editar producto
-// eliminar producto
-
-// TODO Crear orden
-// Medios de pago
-// Crear medios de pago
-// Borrar medios de pago
-// Ver todos los medios de pago
-// Usuarios puedan editar pedido sin cerrar
-// No editar pedido una vez cerrado
